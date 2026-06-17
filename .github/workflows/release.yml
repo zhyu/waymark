@@ -93,3 +93,59 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG_NAME" release-assets/* --clobber
+
+  publish-nightly:
+    name: Publish nightly release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare nightly release notes
+        run: |
+          cat > nightly-notes.md <<EOF
+          Nightly build from \`${GITHUB_SHA}\`.
+
+          This prerelease is replaced by each scheduled or manually dispatched nightly run.
+          EOF
+
+      - name: Publish nightly assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NIGHTLY_TAG: nightly
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$NIGHTLY_TAG" "$GITHUB_SHA"
+          git push --force origin "refs/tags/$NIGHTLY_TAG"
+
+          if gh release view "$NIGHTLY_TAG" >/dev/null 2>&1; then
+            gh release edit "$NIGHTLY_TAG" \
+              --title "Nightly Build" \
+              --notes-file nightly-notes.md \
+              --prerelease \
+              --target "$GITHUB_SHA"
+          else
+            gh release create "$NIGHTLY_TAG" \
+              --title "Nightly Build" \
+              --notes-file nightly-notes.md \
+              --prerelease \
+              --latest=false \
+              --target "$GITHUB_SHA"
+          fi
+
+          gh release upload "$NIGHTLY_TAG" release-assets/* --clobber
