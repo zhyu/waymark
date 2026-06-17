@@ -1,0 +1,45 @@
+name: Verify Homebrew Tap Token
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tap write access
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create and delete a temporary tap ref
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPO: zhyu/homebrew-tap
+          TEST_BRANCH: waymark-token-check-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not configured or is empty" >&2
+            exit 1
+          fi
+
+          cleanup() {
+            gh api -X DELETE "repos/$TAP_REPO/git/refs/heads/$TEST_BRANCH" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          main_sha="$(gh api "repos/$TAP_REPO/git/ref/heads/main" --jq '.object.sha')"
+          gh api -X POST "repos/$TAP_REPO/git/refs" \
+            -f "ref=refs/heads/$TEST_BRANCH" \
+            -f "sha=$main_sha" \
+            >/dev/null
+
+          created_sha="$(gh api "repos/$TAP_REPO/git/ref/heads/$TEST_BRANCH" --jq '.object.sha')"
+          test "$created_sha" = "$main_sha"
+
+          gh api -X DELETE "repos/$TAP_REPO/git/refs/heads/$TEST_BRANCH" >/dev/null
+          trap - EXIT
+
+          echo "HOMEBREW_TAP_TOKEN can read and write refs in $TAP_REPO."
