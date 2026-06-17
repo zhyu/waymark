@@ -172,7 +172,8 @@ jobs:
 
           package_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
           short_sha="${GITHUB_SHA::7}"
-          formula_version="${package_version}-nightly-${short_sha}"
+          release_timestamp="$(date -u +%Y%m%d%H%M%S)"
+          formula_version="${package_version}-nightly.${release_timestamp}.${GITHUB_RUN_ATTEMPT}"
           package_sha256="$(cut -d ' ' -f 1 release-assets/waymark-macos-arm64.tar.gz.sha256)"
 
           cat > homebrew-tap/Formula/waymark.rb <<EOF
@@ -206,7 +207,7 @@ jobs:
           fi
 
           git add Formula/waymark.rb
-          git commit -m "Update waymark nightly to $short_sha"
+          git commit -m "Update waymark nightly to $formula_version ($short_sha)"
           git push
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
