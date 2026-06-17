@@ -14,7 +14,7 @@ fn generated_zsh_code_has_required_integration_points() {
     assert!(!script.contains("emulate sh"));
     assert!(!script.contains("eval"));
 
-    for name in ["z", "zz", "f", "d", "a", "s", "sf", "sd"] {
+    for name in ["z", "zz", "f", "v", "vv", "d", "a", "s", "sf", "sd"] {
         assert!(
             script.contains(&format!("{name}() {{")),
             "missing {name} function"
@@ -35,6 +35,7 @@ fn generated_zsh_code_has_required_integration_points() {
     assert!(script.contains("[[ -n \"$waymark_output\" ]] || return 1"));
     assert!(script.contains("compadd -U -V waymark -- \"$matches[@]\""));
     assert!(script.contains("zstyle ':completion:*' completer _waymark_comma_complete"));
+    assert!(script.contains("compdef _waymark_comma_complete waymark z zz f v vv d a s sf sd"));
 
     for pattern in ["f,*)", "d,*)", ",*)", "*,,,)", "*,,f)", "*,,d)", "*,,)"] {
         assert!(
@@ -62,6 +63,68 @@ fn init_zsh_command_prints_generated_script() {
         waymark::zsh::init_script()
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn zsh_v_and_vv_open_waymark_files_in_editor_when_zsh_is_available() {
+    if !zsh_is_available() {
+        eprintln!("skipping zsh editor helper test because zsh is not available");
+        return;
+    }
+
+    let temp = TempDir::new().expect("tempdir");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir(&bin_dir).expect("create bin dir");
+
+    let init_path = temp.path().join("waymark.zsh");
+    let query_log = temp.path().join("queries.log");
+    let output_path = temp.path().join("query-output.txt");
+    let editor_log = temp.path().join("editor.log");
+    let editor_path = bin_dir.join("editor");
+    let file = temp.path().join("file with spaces.txt");
+    fs::write(&init_path, waymark::zsh::init_script()).expect("write init script");
+    fs::write(&output_path, format!("{}\n", file.display())).expect("write query output");
+    write_stub_waymark(&bin_dir.join("waymark"), &query_log);
+    write_stub_editor(&editor_path);
+
+    let zsh = format!(
+        r#"
+source {init}
+EDITOR={editor}
+v alpha || exit 50
+vv beta || exit 51
+"#,
+        init = zsh_quote(&init_path),
+        editor = zsh_quote(&editor_path),
+    );
+
+    let mut command = Command::new("zsh");
+    command.arg("-fc").arg(zsh);
+    command.env("WAYMARK_QUERY_OUTPUT_FILE", &output_path);
+    command.env("WAYMARK_QUERY_LOG", &query_log);
+    command.env("WAYMARK_EDITOR_LOG", &editor_log);
+    command.env("PATH", path_with_front(&bin_dir));
+    let output = command.output().expect("run zsh editor helper check");
+    assert!(
+        output.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let queries = fs::read_to_string(&query_log).expect("read query log");
+    assert_eq!(queries, ["file\talpha\n", "file\tbeta\n"].concat());
+
+    let editor_calls = fs::read_to_string(&editor_log).expect("read editor log");
+    assert_eq!(
+        editor_calls,
+        [
+            format!("--\t{}\n", file.display()),
+            format!("--\t{}\n", file.display()),
+        ]
+        .concat()
+    );
 }
 
 #[test]
@@ -466,7 +529,26 @@ fn run_zsh_interactive(script: &str) {
 fn write_stub_waymark(path: &Path, query_log: &Path) {
     let script = r#"#!/bin/sh
 if [ "$1" = "query" ]; then
-  printf '%s\t%s\n' "$3" "$7" >> "$WAYMARK_QUERY_LOG"
+  shift
+  kind=
+  query=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --kind)
+        kind="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        query="$*"
+        break
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  printf '%s\t%s\n' "$kind" "$query" >> "$WAYMARK_QUERY_LOG"
   if [ -n "$WAYMARK_EMPTY_QUERY" ]; then
     exit 0
   fi
@@ -490,6 +572,26 @@ exit 0
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).expect("chmod stub waymark");
     fs::write(query_log, "").expect("create query log");
+}
+
+fn write_stub_editor(path: &Path) {
+    let script = r#"#!/bin/sh
+first=1
+for arg in "$@"; do
+  if [ "$first" = 1 ]; then
+    first=0
+  else
+    printf '\t' >> "$WAYMARK_EDITOR_LOG"
+  fi
+  printf '%s' "$arg" >> "$WAYMARK_EDITOR_LOG"
+done
+printf '\n' >> "$WAYMARK_EDITOR_LOG"
+exit 0
+"#;
+    fs::write(path, script).expect("write stub editor");
+    let mut permissions = fs::metadata(path).expect("editor metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod stub editor");
 }
 
 fn path_with_front(dir: &Path) -> String {

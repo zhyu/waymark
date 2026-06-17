@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 use crate::Result;
 use crate::db::{Entry, ScoredEntry};
 
+const FZF_ARGS: &[&str] = &["-1", "-0", "--no-sort", "+m"];
+
 pub fn score_entries(entries: Vec<Entry>, tokens: &[String], now: i64) -> Vec<ScoredEntry> {
     let mut scored = entries
         .into_iter()
@@ -26,6 +28,7 @@ pub fn select_interactive(results: &[ScoredEntry]) -> Result<Option<String>> {
     };
 
     let mut child = match Command::new("fzf")
+        .args(FZF_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -319,6 +322,11 @@ mod tests {
         );
 
         assert_eq!(results[0].entry.path, "/tmp/a/config");
+    }
+
+    #[test]
+    fn interactive_fzf_preserves_waymark_order_and_single_selection() {
+        assert_eq!(FZF_ARGS, ["-1", "-0", "--no-sort", "+m"]);
     }
 
     fn entry(path: &str, rank: f64, last_accessed: i64, access_count: i64) -> Entry {

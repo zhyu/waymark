@@ -42,11 +42,17 @@ The generated zsh code defines:
 - `z query`: cd to the best matching directory
 - `zz query`: choose a matching directory through `fzf`, with best-match fallback
 - `f query`: print the best matching file
+- `v query`: open the best matching file in `$EDITOR`
+- `vv query`: choose a matching file through `fzf`, then open it in `$EDITOR`
 - `d query`: print the best matching directory
 - `a query`: print the best matching file or directory
 - `s query`: list scored file and directory matches
 - `sf query`: list scored file matches
 - `sd query`: list scored directory matches
+
+Interactive commands use `fzf -1 -0 --no-sort +m` so Waymark's ranked order is
+preserved, single candidates are accepted immediately, empty candidate sets exit
+without opening an empty picker, and multi-select is disabled.
 
 It also registers quiet `chpwd` and conservative `preexec` hooks. Hook functions
 use `emulate -L zsh` and do not use `emulate sh`.

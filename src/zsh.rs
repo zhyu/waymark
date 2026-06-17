@@ -22,6 +22,30 @@ f() {
   command waymark query --kind file --best -- "$@"
 }
 
+v() {
+  emulate -L zsh
+  local file
+  file="$(command waymark query --kind file --best -- "$@")" || return
+  _waymark_edit_file "$file"
+}
+
+vv() {
+  emulate -L zsh
+  local file
+  file="$(command waymark query --kind file --interactive -- "$@")" || return
+  _waymark_edit_file "$file"
+}
+
+_waymark_edit_file() {
+  emulate -L zsh
+  local file="$1"
+  [[ -n "$file" ]] || return 1
+
+  local -a editor
+  editor=("${(@z)${EDITOR:-vi}}")
+  "${editor[@]}" -- "$file"
+}
+
 d() {
   emulate -L zsh
   command waymark query --kind dir --best -- "$@"
@@ -130,7 +154,7 @@ _waymark_install_completion() {
   emulate -L zsh
 
   if (( $+functions[compdef] )); then
-    compdef _waymark_comma_complete waymark z zz f d a s sf sd
+    compdef _waymark_comma_complete waymark z zz f v vv d a s sf sd
   fi
 
   local -a waymark_completers
