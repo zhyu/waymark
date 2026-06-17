@@ -15,7 +15,13 @@ This repository currently contains the MVP described in
 
 ## Install
 
-Build the binary:
+Install the latest nightly build on macOS arm64 with Homebrew:
+
+```sh
+brew install zhyu/tap/waymark
+```
+
+Or build the binary from source:
 
 ```sh
 cargo build --release
