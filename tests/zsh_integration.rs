@@ -29,7 +29,7 @@ fn generated_zsh_code_has_required_integration_points() {
     assert!(script.contains("add-zsh-hook preexec _waymark_preexec"));
     assert!(
         script.contains(
-            "waymark_output=\"$(command waymark query --kind \"$kind\" --limit 50 -- \"$query\" 2>/dev/null)\" || return 1"
+            "waymark_output=\"$(command waymark query --kind \"$kind\" --limit \"$waymark_limit\" -- \"$query_tokens[@]\" 2>/dev/null)\" || return 1"
         )
     );
     assert!(script.contains("[[ -n \"$waymark_output\" ]] || return 1"));
@@ -211,6 +211,10 @@ run_case "delta,,"
 run_case "epsilon,,,"
 run_case "zeta,,f"
 run_case "eta,,d"
+run_case ",alpha,beta"
+run_case ",alpha,beta,"
+run_case "d,web,root"
+run_case "theta,phi,,f"
 "#,
         init = zsh_quote(&init_path),
         compadd_log = zsh_quote(&compadd_log),
@@ -236,16 +240,126 @@ run_case "eta,,d"
             "any\talpha\n",
             "file\tbeta\n",
             "dir\tgamma\n",
-            "any\tdelta\n",
-            "any\tepsilon\n",
-            "file\tzeta\n",
-            "dir\teta\n",
+            "any\tdelta \n",
+            "any\tepsilon \n",
+            "file\tzeta \n",
+            "dir\teta \n",
+            "any\talpha beta\n",
+            "any\talpha beta \n",
+            "dir\tweb root\n",
+            "file\ttheta phi \n",
         ]
         .concat()
     );
 
     let compadd_calls = fs::read_to_string(&compadd_log).expect("read compadd log");
-    assert_eq!(compadd_calls.lines().count(), 7);
+    assert_eq!(compadd_calls.lines().count(), 11);
+}
+
+#[test]
+fn zsh_comma_completion_requests_menu_for_multiple_matches_when_zsh_is_available() {
+    if !zsh_is_available() {
+        eprintln!("skipping zsh completion menu test because zsh is not available");
+        return;
+    }
+
+    let temp = TempDir::new().expect("tempdir");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir(&bin_dir).expect("create bin dir");
+
+    let init_path = temp.path().join("waymark.zsh");
+    let query_log = temp.path().join("queries.log");
+    fs::write(&init_path, waymark::zsh::init_script()).expect("write init script");
+    write_stub_waymark(&bin_dir.join("waymark"), &query_log);
+
+    let zsh = format!(
+        r#"
+source {init}
+typeset -A compstate
+
+compadd() {{
+  return 0
+}}
+
+words=(",alpha")
+CURRENT=1
+_waymark_comma_complete || exit 40
+[[ "${{compstate[insert]}}" = menu ]] || exit 41
+[[ "${{compstate[list]}}" = list ]] || exit 42
+"#,
+        init = zsh_quote(&init_path),
+    );
+
+    let mut command = Command::new("zsh");
+    command.arg("-fc").arg(zsh);
+    command.env("WAYMARK_QUERY_LOG", &query_log);
+    command.env("PATH", path_with_front(&bin_dir));
+    let output = command.output().expect("run zsh completion menu check");
+    assert!(
+        output.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn zsh_comma_completion_uses_default_and_configured_limit_when_zsh_is_available() {
+    if !zsh_is_available() {
+        eprintln!("skipping zsh completion limit test because zsh is not available");
+        return;
+    }
+
+    let temp = TempDir::new().expect("tempdir");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir(&bin_dir).expect("create bin dir");
+
+    let init_path = temp.path().join("waymark.zsh");
+    let query_log = temp.path().join("queries.log");
+    let limit_log = temp.path().join("limits.log");
+    fs::write(&init_path, waymark::zsh::init_script()).expect("write init script");
+    write_stub_waymark(&bin_dir.join("waymark"), &query_log);
+
+    let zsh = format!(
+        r#"
+source {init}
+
+compadd() {{
+  return 0
+}}
+
+run_case() {{
+  words=("$1")
+  CURRENT=1
+  _waymark_comma_complete || return 1
+}}
+
+run_case ",alpha"
+WAYMARK_COMPLETION_LIMIT=7
+run_case ",beta"
+WAYMARK_COMPLETION_LIMIT=bogus
+run_case ",gamma"
+"#,
+        init = zsh_quote(&init_path),
+    );
+
+    let mut command = Command::new("zsh");
+    command.arg("-fc").arg(zsh);
+    command.env("WAYMARK_QUERY_LOG", &query_log);
+    command.env("WAYMARK_QUERY_LIMIT_LOG", &limit_log);
+    command.env("PATH", path_with_front(&bin_dir));
+    let output = command.output().expect("run zsh completion limit check");
+    assert!(
+        output.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let limits = fs::read_to_string(&limit_log).expect("read limit log");
+    assert_eq!(limits, ["1\n", "7\n", "1\n"].concat());
 }
 
 #[test]
@@ -531,11 +645,16 @@ fn write_stub_waymark(path: &Path, query_log: &Path) {
 if [ "$1" = "query" ]; then
   shift
   kind=
+  limit=
   query=
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --kind)
         kind="$2"
+        shift 2
+        ;;
+      --limit)
+        limit="$2"
         shift 2
         ;;
       --)
@@ -549,6 +668,9 @@ if [ "$1" = "query" ]; then
     esac
   done
   printf '%s\t%s\n' "$kind" "$query" >> "$WAYMARK_QUERY_LOG"
+  if [ -n "$WAYMARK_QUERY_LIMIT_LOG" ]; then
+    printf '%s\n' "$limit" >> "$WAYMARK_QUERY_LIMIT_LOG"
+  fi
   if [ -n "$WAYMARK_EMPTY_QUERY" ]; then
     exit 0
   fi

@@ -129,20 +129,38 @@ _waymark_comma_complete() {
     f,*) kind="file"; query="${cur#f,}" ;;
     d,*) kind="dir"; query="${cur#d,}" ;;
     ,*) kind="any"; query="${cur#,}" ;;
-    *,,,) kind="any"; query="${cur%,,,}" ;;
-    *,,f) kind="file"; query="${cur%,,f}" ;;
-    *,,d) kind="dir"; query="${cur%,,d}" ;;
-    *,,) kind="any"; query="${cur%,,}" ;;
+    *,,,) kind="any"; query="${cur%,,,}," ;;
+    *,,f) kind="file"; query="${cur%,,f}," ;;
+    *,,d) kind="dir"; query="${cur%,,d}," ;;
+    *,,) kind="any"; query="${cur%,,}," ;;
     *) return 1 ;;
   esac
 
+  local waymark_limit="${WAYMARK_COMPLETION_LIMIT:-1}"
+  if [[ "$waymark_limit" != <-> ]] || (( waymark_limit < 1 )); then
+    waymark_limit=1
+  fi
+
+  local -a query_tokens
+  local waymark_token
+  local waymark_trailing_comma=0
+  [[ "$query" == *, ]] && waymark_trailing_comma=1
+  for waymark_token in "${(@s:,:)query}"; do
+    [[ -n "$waymark_token" ]] && query_tokens+=("$waymark_token")
+  done
+  (( waymark_trailing_comma )) && query_tokens+=("")
+
   local waymark_output
-  waymark_output="$(command waymark query --kind "$kind" --limit 50 -- "$query" 2>/dev/null)" || return 1
+  waymark_output="$(command waymark query --kind "$kind" --limit "$waymark_limit" -- "$query_tokens[@]" 2>/dev/null)" || return 1
   [[ -n "$waymark_output" ]] || return 1
 
   local -a matches
   matches=("${(@f)waymark_output}")
   (( ${#matches} )) || return 1
+  if (( ${#matches} > 1 && $+compstate )); then
+    compstate[insert]=menu
+    compstate[list]=list
+  fi
   compadd -U -V waymark -- "$matches[@]"
 }
 

@@ -9,17 +9,31 @@ use crate::db::{Entry, ScoredEntry};
 const FZF_ARGS: &[&str] = &["-1", "-0", "--no-sort", "+m"];
 
 pub fn score_entries(entries: Vec<Entry>, tokens: &[String], now: i64) -> Vec<ScoredEntry> {
-    let mut scored = entries
-        .into_iter()
-        .filter_map(|entry| {
-            let match_score = match_score(&entry.path, tokens)?;
-            let score = match_score * frecency_score(entry.rank, entry.last_accessed, now);
-            Some(ScoredEntry { entry, score })
-        })
-        .collect::<Vec<_>>();
+    let query = normalize_tokens(tokens);
+    for mode in [
+        MatchMode::CaseSensitive,
+        MatchMode::CaseInsensitive,
+        MatchMode::Fuzzy,
+    ] {
+        let mut scored = entries
+            .iter()
+            .filter_map(|entry| {
+                let match_score = match_score(&entry.path, &query, mode)?;
+                let score = match_score * frecency_score(entry.rank, entry.last_accessed, now);
+                Some(ScoredEntry {
+                    entry: entry.clone(),
+                    score,
+                })
+            })
+            .collect::<Vec<_>>();
 
-    scored.sort_by(compare_scored);
-    scored
+        if !scored.is_empty() || query.tokens.is_empty() {
+            scored.sort_by(compare_scored);
+            return scored;
+        }
+    }
+
+    Vec::new()
 }
 
 pub fn select_interactive(results: &[ScoredEntry]) -> Result<Option<String>> {
@@ -84,39 +98,64 @@ fn recency_multiplier(age_seconds: i64) -> f64 {
     }
 }
 
-fn match_score(path: &str, tokens: &[String]) -> Option<f64> {
-    let tokens = tokens
-        .iter()
-        .map(|token| token.trim())
+struct Query<'a> {
+    tokens: Vec<&'a str>,
+    last_suffix: SuffixRule,
+}
+
+fn normalize_tokens(tokens: &[String]) -> Query<'_> {
+    let mut raw = tokens.iter().map(|token| token.trim()).collect::<Vec<_>>();
+
+    let mut last_suffix = SuffixRule::FinalSegment;
+    while raw.last().is_some_and(|token| token.is_empty()) {
+        last_suffix = SuffixRule::Any;
+        raw.pop();
+    }
+
+    if raw.last() == Some(&"/") {
+        last_suffix = SuffixRule::HasSlash;
+        raw.pop();
+    }
+
+    let tokens = raw
+        .into_iter()
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
-    if tokens.is_empty() {
+
+    Query {
+        tokens,
+        last_suffix,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MatchMode {
+    CaseSensitive,
+    CaseInsensitive,
+    Fuzzy,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SuffixRule {
+    Any,
+    FinalSegment,
+    HasSlash,
+}
+
+fn match_score(path: &str, query: &Query<'_>, mode: MatchMode) -> Option<f64> {
+    if query.tokens.is_empty() {
         return Some(1.0);
     }
 
     let mut cursor = 0;
     let mut score = 0.0;
-    for token in tokens {
-        let matched = find_case_sensitive(path, token, cursor)
-            .map(|position| Match {
-                position,
-                end: position + token.len(),
-                base: 100.0,
-            })
-            .or_else(|| {
-                find_case_insensitive(path, token, cursor).map(|(position, end)| Match {
-                    position,
-                    end,
-                    base: 70.0,
-                })
-            })
-            .or_else(|| {
-                find_fuzzy(path, token, cursor).map(|(position, end)| Match {
-                    position,
-                    end,
-                    base: 25.0,
-                })
-            })?;
+    for (index, &token) in query.tokens.iter().enumerate() {
+        let suffix_rule = if index + 1 == query.tokens.len() {
+            query.last_suffix
+        } else {
+            SuffixRule::Any
+        };
+        let matched = find_match(path, token, cursor, mode, suffix_rule)?;
 
         score +=
             matched.base * boundary_boost(path, matched.position) * basename_boost(path, token);
@@ -131,6 +170,68 @@ struct Match {
     position: usize,
     end: usize,
     base: f64,
+}
+
+fn find_match(
+    path: &str,
+    token: &str,
+    cursor: usize,
+    mode: MatchMode,
+    suffix_rule: SuffixRule,
+) -> Option<Match> {
+    let mut search_cursor = cursor;
+    loop {
+        let matched = match mode {
+            MatchMode::CaseSensitive => {
+                find_case_sensitive(path, token, search_cursor).map(|position| Match {
+                    position,
+                    end: position + token.len(),
+                    base: 100.0,
+                })
+            }
+            MatchMode::CaseInsensitive => {
+                find_case_insensitive(path, token, search_cursor).map(|(position, end)| Match {
+                    position,
+                    end,
+                    base: 70.0,
+                })
+            }
+            MatchMode::Fuzzy => {
+                find_fuzzy(path, token, search_cursor).map(|(position, end)| Match {
+                    position,
+                    end,
+                    base: 25.0,
+                })
+            }
+        }?;
+
+        if suffix_rule.matches(path, matched.end) {
+            return Some(matched);
+        }
+
+        search_cursor = next_char_boundary(path, matched.position)?;
+    }
+}
+
+impl SuffixRule {
+    fn matches(self, path: &str, end: usize) -> bool {
+        let suffix = path.get(end..).unwrap_or_default();
+        match self {
+            SuffixRule::Any => true,
+            SuffixRule::FinalSegment => !has_path_separator(suffix),
+            SuffixRule::HasSlash => has_path_separator(suffix),
+        }
+    }
+}
+
+fn has_path_separator(value: &str) -> bool {
+    value.contains(['/', '\\'])
+}
+
+fn next_char_boundary(value: &str, position: usize) -> Option<usize> {
+    let mut chars = value.get(position..)?.chars();
+    let ch = chars.next()?;
+    Some(position + ch.len_utf8())
 }
 
 fn find_case_sensitive(path: &str, token: &str, cursor: usize) -> Option<usize> {
@@ -215,6 +316,7 @@ mod tests {
             now,
         );
 
+        assert_eq!(results.len(), 1);
         assert_eq!(results[0].entry.path, "/tmp/project/config");
     }
 
@@ -279,6 +381,38 @@ mod tests {
     }
 
     #[test]
+    fn exact_matches_suppress_fuzzy_fallback_matches() {
+        let now = 10_000;
+        let results = score_entries(
+            vec![
+                entry("/tmp/project/config", 1.0, now, 1),
+                entry("/tmp/project/c-o-n-f-i-g", 100.0, now, 100),
+            ],
+            &["config".to_string()],
+            now,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entry.path, "/tmp/project/config");
+    }
+
+    #[test]
+    fn case_insensitive_matches_suppress_fuzzy_fallback_matches() {
+        let now = 10_000;
+        let results = score_entries(
+            vec![
+                entry("/tmp/project/Config.toml", 1.0, now, 1),
+                entry("/tmp/project/c-o-n-f-i-g", 100.0, now, 100),
+            ],
+            &["config".to_string()],
+            now,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entry.path, "/tmp/project/Config.toml");
+    }
+
+    #[test]
     fn path_segment_boundaries_boost_matches() {
         let now = 10_000;
         let results = score_entries(
@@ -291,6 +425,67 @@ mod tests {
         );
 
         assert_eq!(results[0].entry.path, "/tmp/project/my/config");
+    }
+
+    #[test]
+    fn last_token_matches_last_path_segment_by_default() {
+        let now = 10_000;
+        let results = score_entries(
+            vec![
+                entry("/tmp/project/foo/subdir", 100.0, now, 100),
+                entry("/tmp/project/foo", 1.0, now, 1),
+            ],
+            &["foo".to_string()],
+            now,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entry.path, "/tmp/project/foo");
+    }
+
+    #[test]
+    fn last_token_can_skip_parent_segment_occurrence() {
+        let now = 10_000;
+        let results = score_entries(
+            vec![entry("/tmp/foo/project/barfoo", 1.0, now, 1)],
+            &["foo".to_string()],
+            now,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entry.path, "/tmp/foo/project/barfoo");
+    }
+
+    #[test]
+    fn trailing_empty_token_allows_descendant_matches() {
+        let now = 10_000;
+        let results = score_entries(
+            vec![
+                entry("/tmp/project/foo/subdir", 100.0, now, 100),
+                entry("/tmp/project/foo", 1.0, now, 1),
+            ],
+            &["foo".to_string(), "".to_string()],
+            now,
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].entry.path, "/tmp/project/foo/subdir");
+    }
+
+    #[test]
+    fn slash_last_token_requires_descendant_matches() {
+        let now = 10_000;
+        let results = score_entries(
+            vec![
+                entry("/tmp/project/foo", 100.0, now, 100),
+                entry("/tmp/project/foo/subdir", 1.0, now, 1),
+            ],
+            &["foo".to_string(), "/".to_string()],
+            now,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entry.path, "/tmp/project/foo/subdir");
     }
 
     #[test]

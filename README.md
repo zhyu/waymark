@@ -130,13 +130,20 @@ The zsh integration supports the fasd-style forms used by the MVP:
 ,query
 f,query
 d,query
+query,with,parts
+,query,
 query,,,
 query,,f
 query,,d
 ```
 
 Completion candidates are queried from the Waymark database and added through
-zsh completion APIs.
+zsh completion APIs. Commas inside the query are treated as token separators, so
+`,rc,lo` searches for `rc lo`. Like fasd, the last query token matches the last
+path segment by default; a trailing comma relaxes that constraint, and a trailing
+`/` query requires a descendant path. By default comma completion inserts the
+single best match; set `WAYMARK_COMPLETION_LIMIT=10` before loading the zsh
+integration to offer a short ranked completion list instead.
 
 ## Database
 
